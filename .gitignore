@@ -1,0 +1,8 @@
+results/features/
+results/*.log
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+.venv/
+*.json
+*.csv
