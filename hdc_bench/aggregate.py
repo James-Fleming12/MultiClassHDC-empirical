@@ -512,11 +512,162 @@ def cross_summary():
     pd.DataFrame(rows).to_csv(os.path.join(TABLE_DIR, "summary_all.csv"), index=False)
 
 
+def variants_report():
+    """Tables for the HDC configuration ablation (suite ``variants``)."""
+    import pandas as pd
+
+    df = suite_table("variants")
+    if df.empty:
+        print("[report] no variants records")
+        return df
+    df.to_csv(os.path.join(TABLE_DIR, "tidy_variants.csv"), index=False)
+    names = [c[len("variants_"):-len("_4096_id")] for c in df.columns
+             if c.startswith("variants_") and c.endswith("_4096_id")]
+    names = sorted(set(names))
+
+    def mean_of(sub, col):
+        v = sub[col].dropna()
+        return float(v.mean()) if len(v) else float("nan")
+
+    def fmt(v):
+        return f"{v:.3f}" if isinstance(v, float) and not np.isnan(v) else "-"
+
+    # per case ID tables + gap tables
+    for (dataset, backbone), sub in df.groupby(["dataset", "backbone"], dropna=False):
+        tag = f"{dataset}__{backbone or 'raw'}"
+        ks = sorted(sub["K"].unique())
+        for L in (4096, 10000):
+            lines = ["| head / variant | " + " | ".join(str(k) for k in ks) + " |",
+                     "| :--- | " + " | ".join(["---:"] * len(ks)) + " |"]
+            for h in ["linear", "mlp", "proto"]:
+                cells = [_sv(sub[sub["K"] == k][f"heads_{h}"]) for k in ks]
+                lines.append(f"| {h} | " + " | ".join(cells) + " |")
+            for n in names:
+                col = f"variants_{n}_{L}_id"
+                if col not in sub:
+                    continue
+                cells = [_sv(sub[sub["K"] == k][col]) for k in ks]
+                lines.append(f"| {n} | " + " | ".join(cells) + " |")
+            save_md(f"variants_id{L}_{tag}.md",
+                    f"{tag}: ID accuracy by HDC configuration (code length {L})\n\n" +
+                    "\n".join(lines))
+        # gap to the trained linear head (mean over seeds, per variant)
+        lines = ["| variant | " + " | ".join(str(k) for k in ks) + " |",
+                 "| :--- | " + " | ".join(["---:"] * len(ks)) + " |"]
+        for n in names:
+            cells = []
+            for k in ks:
+                s = sub[sub["K"] == k]
+                g4 = mean_of(s, f"variants_{n}_4096_id") - mean_of(s, "heads_linear")
+                g10 = mean_of(s, f"variants_{n}_10000_id") - mean_of(s, "heads_linear")
+                cells.append(f"{g4:+.3f} / {g10:+.3f}")
+            lines.append(f"| {n} | " + " | ".join(cells) + " |")
+        save_md(f"variants_gap_{tag}.md",
+                f"{tag}: ID accuracy delta vs the trained linear head (4k / 10k)\n\n" +
+                "\n".join(lines))
+        # auxiliary metrics at the largest K that has novel classes
+        kn = [k for k in ks if sub[(sub["K"] == k)]["N"].max() > 0]
+        ka = kn[-1] if kn else ks[-1]
+        lines = ["| variant | AUROC 4k | AUROC 10k | cluster 4k | cluster 10k | noise0.10 4k | noise0.10 10k |",
+                 "| :--- | ---: | ---: | ---: | ---: | ---: | ---: |"]
+        ref = sub[sub["K"] == ka]
+        lines.append(f"| linear (ref) | {fmt(mean_of(ref, 'heads_auroc_linear'))} | - | "
+                     f"{fmt(mean_of(ref, 'heads_auroc_cluster_feat'))} | - | "
+                     f"{fmt(mean_of(ref, 'heads_robust_noise0.10_linear'))} | - |")
+        for n in names:
+            row = [mean_of(ref, f"variants_{n}_{L}_auroc") for L in (4096, 10000)]
+            clu = [mean_of(ref, f"variants_{n}_{L}_cluster") for L in (4096, 10000)]
+            rob = [mean_of(ref, f"variants_{n}_{L}_robust_noise0.10") for L in (4096, 10000)]
+            lines.append(f"| {n} | " + " | ".join(fmt(v) for v in row + clu + rob) + " |")
+        save_md(f"variants_aux_{tag}.md",
+                f"{tag}: auxiliary metrics at K={ka} (mean over seeds)\n\n" + "\n".join(lines))
+
+    # projection-draw variance
+    lines = ["| case | code len | mean range (max-min) | mean min | mean max |",
+             "| :--- | ---: | ---: | ---: | ---: |"]
+    for (dataset, backbone), sub in df.groupby(["dataset", "backbone"], dropna=False):
+        tag = f"{dataset}__{backbone or 'raw'}"
+        for L in (4096, 10000):
+            cmin = sub[f"gauss_draws_{L}_min"]
+            cmax = sub[f"gauss_draws_{L}_max"]
+            lines.append(f"| {tag} | {L} | {float((cmax - cmin).mean()):.4f} | "
+                         f"{float(cmin.mean()):.3f} | {float(cmax.mean()):.3f} |")
+    save_md("variants_projection_draws.md",
+            "Baseline Gaussian HDC: accuracy range over 3 independent projection draws\n\n" +
+            "\n".join(lines))
+    return df
+
+
+def backbone_gap_report():
+    """Gap between HDC and trained heads across every available extractor."""
+    import pandas as pd
+
+    rows = []
+    for suite, key in [("images/cifar100", "CIFAR-100"),
+                       ("images/tinyimagenet", "TinyImageNet")]:
+        df = suite_table(suite)
+        if df.empty:
+            continue
+        for bb in sorted(df["backbone"].unique()):
+            subb = df[df["backbone"] == bb]
+            for K in sorted(subb["K"].unique()):
+                sub = subb[subb["K"] == K]
+
+                def m(col):
+                    v = sub[col].dropna() if col in sub else pd.Series(dtype=float)
+                    return float(v.mean()) if len(v) else float("nan")
+
+                rows.append({
+                    "benchmark": key, "backbone": bb, "K": int(K),
+                    "hdc4096": m("id_hdc4096"), "hdc10000": m("id_hdc10000"),
+                    "linear": m("id_linear"), "mlp": m("id_mlp"), "proto": m("id_proto"),
+                    "gap_linear": m("id_linear") - m("id_hdc4096"),
+                    "gap_mlp": m("id_mlp") - m("id_hdc4096"),
+                    "gap_linear10": m("id_linear") - m("id_hdc10000"),
+                })
+    if not rows:
+        return
+    out = pd.DataFrame(rows)
+    out.to_csv(os.path.join(TABLE_DIR, "backbone_gaps.csv"), index=False)
+    for key in out["benchmark"].unique():
+        sub = out[out["benchmark"] == key]
+        ks = sorted(sub["K"].unique())
+        bbs = sorted(sub["backbone"].unique())
+        lines = ["| backbone | " + " | ".join(f"gap lin K={k}" for k in ks) + " | "
+                 + " | ".join(f"gap mlp K={k}" for k in ks) + " |",
+                 "| :--- | " + " | ".join(["---:"] * (2 * len(ks))) + " |"]
+        for bb in bbs:
+            cells = []
+            for K in ks:
+                r = sub[(sub["backbone"] == bb) & (sub["K"] == K)]
+                cells.append(f"{r['gap_linear'].iloc[0]:+.3f}" if len(r) else "-")
+            for K in ks:
+                r = sub[(sub["backbone"] == bb) & (sub["K"] == K)]
+                cells.append(f"{r['gap_mlp'].iloc[0]:+.3f}" if len(r) else "-")
+            lines.append(f"| {bb} | " + " | ".join(cells) + " |")
+        save_md(f"backbone_gaps_{key}.md",
+                f"{key}: HDC(4k) accuracy gap to the linear / MLP head "
+                f"(negative = HDC worse)\n\n" + "\n".join(lines))
+
+        # at Kmax: extractor quality vs gap
+        kmax = ks[-1]
+        subk = sub[sub["K"] == kmax].sort_values("linear", ascending=False)
+        lines = ["| backbone | linear acc | MLP acc | HDC4k acc | gap linear | gap MLP |",
+                 "| :--- | ---: | ---: | ---: | ---: | ---: |"]
+        for _, r in subk.iterrows():
+            lines.append(f"| {r['backbone']} | {r['linear']:.3f} | {r['mlp']:.3f} | "
+                         f"{r['hdc4096']:.3f} | {r['gap_linear']:+.3f} | {r['gap_mlp']:+.3f} |")
+        save_md(f"backbone_gap_summary_{key}.md",
+                f"{key} at K={kmax}: extractor quality vs HDC gap\n\n" + "\n".join(lines))
+
+
 def main():
     synthetic_report()
     image_report("images/cifar100", "cifar100", k_series_n=20, n_series_k=50)
     image_report("images/tinyimagenet", "tinyimagenet", k_series_n=20, n_series_k=100)
     pretrain_report()
+    variants_report()
+    backbone_gap_report()
     cross_summary()
 
 

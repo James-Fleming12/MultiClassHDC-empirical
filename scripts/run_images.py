@@ -67,7 +67,11 @@ def main():
                     choices=list(GRIDS))
     ap.add_argument("--backbones", nargs="+", default=list(BACKBONES), choices=list(BACKBONES))
     ap.add_argument("--seeds", nargs="+", type=int, default=[0, 1, 2])
+    ap.add_argument("--ks", nargs="+", type=int, default=None,
+                    help="override the K grid (K-series, N = min(20, C-K))")
     ap.add_argument("--perturbations", nargs="+", default=["noise0.05", "noise0.10"])
+    ap.add_argument("--skip-robust", action="store_true",
+                    help="do not load perturbation caches (for the backbone sweep)")
     ap.add_argument("--force", action="store_true")
     ap.add_argument("--limit", type=int, default=0, help="limit configs per (dataset, backbone)")
     args = ap.parse_args()
@@ -82,6 +86,8 @@ def main():
             Xte_all, yte_all = clean["X_test"].numpy(), clean["y_test"].numpy()
             class_names = clean["class_names"]
             robust_all = {}
+            if args.skip_robust:
+                args.perturbations = []
             for perturb in args.perturbations:
                 try:
                     d = load_features(dataset, backbone, perturb)
@@ -91,7 +97,10 @@ def main():
 
             for seed in args.seeds:
                 perm = np.random.default_rng(seed).permutation(n_total)
-                cfgs = configs_for(dataset)
+                if args.ks:
+                    cfgs = [(k, min(20, n_total - k)) for k in args.ks]
+                else:
+                    cfgs = configs_for(dataset)
                 if args.limit:
                     cfgs = cfgs[:args.limit]
                 for K, N in cfgs:

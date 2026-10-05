@@ -37,7 +37,8 @@ TRAIN_FRACTION = 0.7
 IMAGENET_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_STD = (0.229, 0.224, 0.225)
 
-BACKBONES = ("dinov2_vitb14_reg", "resnet18")
+BACKBONES = ("dinov2_vitb14_reg", "resnet18", "dinov2_vits14_reg",
+             "dino_vits16", "resnet50", "mobilenet_v2", "tinyvit_11m")
 PERTURBATIONS = ("clean", "noise0.05", "noise0.10")
 
 
@@ -110,11 +111,34 @@ def load_backbone(name: str, device):
         model = torch.hub.load("facebookresearch/dinov2", "dinov2_vitb14_reg",
                                verbose=False)
         dim = 768
+    elif name == "dinov2_vits14_reg":
+        model = torch.hub.load("facebookresearch/dinov2", "dinov2_vits14_reg",
+                               verbose=False)
+        dim = 384
+    elif name == "dino_vits16":
+        model = torch.hub.load("facebookresearch/dino:main", "dino_vits16",
+                               verbose=False)
+        dim = model.embed_dim
     elif name == "resnet18":
         from torchvision.models import ResNet18_Weights, resnet18
         model = resnet18(weights=ResNet18_Weights.IMAGENET1K_V1)
         model.fc = torch.nn.Identity()
         dim = 512
+    elif name == "resnet50":
+        from torchvision.models import ResNet50_Weights, resnet50
+        model = resnet50(weights=ResNet50_Weights.IMAGENET1K_V1)
+        model.fc = torch.nn.Identity()
+        dim = 2048
+    elif name == "mobilenet_v2":
+        from torchvision.models import MobileNet_V2_Weights, mobilenet_v2
+        model = mobilenet_v2(weights=MobileNet_V2_Weights.IMAGENET1K_V1)
+        model.classifier = torch.nn.Identity()
+        dim = 1280
+    elif name == "tinyvit_11m":
+        import timm
+        model = timm.create_model("tiny_vit_11m_224.dist_in22k", pretrained=True,
+                                  num_classes=0)
+        dim = model.num_features
     else:
         raise ValueError(f"unknown backbone {name}")
     model = model.to(device).eval()

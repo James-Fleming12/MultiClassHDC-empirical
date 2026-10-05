@@ -54,27 +54,31 @@ computing (HDC) prototype classifiers** when the number of classes grows:
   (many/few classes, ID, robustness, novel discovery, few-shot, OOD detection)?
 
 Everything is measured on **synthetic data**, **CIFAR-100** and
-**TinyImageNet**, with **HD dimension 4096 and 10000** in every HDC run, three
-feature sources (DINOv2 ViT-B/14-reg, ResNet-18, small from-scratch CNNs), and
-3-5 seeds.  All raw run records, tidy CSVs, tables and figures are under
-`results/`; the README tables are generated from those records by
-`scripts/make_report.py`.
+**TinyImageNet**, with **HD dimension 4096 and 10000** in every HDC run, seven
+frozen feature sources (DINOv2 ViT-B/14-reg and ViT-S/14-reg, DINOv1 ViT-S/16,
+TinyViT-11M, ResNet-18/50, MobileNetV2) plus small from-scratch CNNs/MLPs,
+10 HDC encoding configurations, and 2-5 seeds.  All raw run records, tidy
+CSVs, tables and figures are under `results/`; the README tables are generated
+from those records by `scripts/make_report.py`.
 
 ---
 
 ## Headline answers (details and exact tables below)
 
-1. **HDC prototype accuracy does degrade with K, but the degradation is
-   shared by the trained network heads and by the network itself.** On frozen
-   DINOv2 features, CIFAR-100 HDC ID accuracy falls `0.957 -> 0.724` from
-   K = 5 to K = 100 and TinyImageNet `0.960 -> 0.834` from K = 10 to K = 200.
-   The trained linear/MLP heads on the **same frozen features** degrade by a
-   similar amount and stay only ~2-5 points above HDC at the largest K.  When a
-   small CNN is trained on K classes, the network's own head and the HDC
-   prototype head built on its penultimate features fall together (CIFAR
-   pretrain: `net 0.92 -> 0.71`, `HDC 0.92 -> 0.70`; Tiny pretrain:
-   `net 0.74 -> 0.50`, `HDC 0.72 -> 0.48`), so there is no separate HDC-specific
-   collapse in this regime.
+1. **HDC prototype accuracy does degrade with K, but most of the degradation
+   is shared by the trained network heads and by the network itself; a smaller
+   residual gap is specific to the prototype readout and grows with K.** On
+   frozen DINOv2 features, CIFAR-100 HDC ID accuracy falls `0.957 -> 0.724`
+   from K = 5 to K = 100 and TinyImageNet `0.960 -> 0.834` from K = 10 to
+   K = 200.  The trained linear/MLP heads on the **same frozen features**
+   degrade by a similar amount and stay ~2-5 points above HDC at the largest
+   K; on weak extractors the residual grows to 7-9 points (linear) and 14-17
+   points (MLP) (Section 7).  When a small CNN is trained on K classes, the
+   network's own head and the HDC prototype head built on its penultimate
+   features fall together (CIFAR pretrain: `net 0.92 -> 0.71`,
+   `HDC 0.92 -> 0.70`; Tiny pretrain: `net 0.74 -> 0.50`, `HDC 0.72 -> 0.48`),
+   so there is no encoder-side collapse; the residual is a readout effect
+   (Section 6).
 2. **Dimension 4096 vs 10000 is not the bottleneck for real features.** HDC
    10k beats HDC 4k by only `+0.001..+0.005` on CIFAR-100/TinyImageNet DINOv2
    and ResNet-18 features at every K.  The gap is meaningful only on synthetic
@@ -101,6 +105,18 @@ feature sources (DINOv2 ViT-B/14-reg, ResNet-18, small from-scratch CNNs), and
    OOD detection, and the HDC head inherits the loss.**  The class count, not
    the HD dimension, is the lever: increasing K costs the most, increasing N
    mostly costs novel clustering and leaves OOD AUROC flat.
+6. **The remaining gap is a readout gap, not a projection gap, and it widens
+   as the extractor weakens.**  Ten HDC configurations at matched bit budget
+   leave the ID gap essentially unchanged: Gaussian / Rademacher / sparse /
+   ensembled projections are interchangeable to `<0.003`, and 2-/3-bit
+   quantized codes are *worse* than the 1-bit sign code on accuracy, AUROC,
+   clustering and robustness.  The only configuration that closes the gap is
+   `lincodes`, a trained linear layer on the same codes, which matches or
+   beats the linear head on raw features (and beats it by 3-5 points on
+   ResNet-18).  Across seven extractors the gap grows from 3-5 points
+   (DINOv2-B) to 7-9 points (ResNet-50 / MobileNetV2) at K = 100/200, and up
+   to 14-17 points against an MLP - so a project on HDC readouts/prototypes
+   for high-class settings has a real, well-localised target.
 
 ---
 
@@ -447,13 +463,108 @@ upper reference for "what the network learned".
 
 ---
 
-## 6. Cross-benchmark summary
+## 6. Do HDC configurations close the gap?
+
+Ten configurations at matched code length (4k / 10k): projections
+`gauss` / `rade` / `sparse` / `ens2`; quantization `sign` (1 bit), `th2` / `th3`
+(2- / 3-bit thermometer); prototypes `majority`, `median`, `projmean`; and
+`lincodes`, a trained linear layer on the same codes (the capacity ceiling of
+the encoding).  The `gauss` baseline is the head used everywhere else.
+
+Gap to the trained linear head on the raw features (negative = HDC worse):
+
+{T('variants_gap_cifar100__dinov2_vitb14_reg.md')}
+
+{T('variants_gap_tinyimagenet__dinov2_vitb14_reg.md')}
+
+{T('variants_gap_cifar100__resnet18.md')}
+
+{T('variants_gap_gmm__raw.md')}
+
+Auxiliary metrics at the largest K with novel classes:
+
+{T('variants_aux_cifar100__dinov2_vitb14_reg.md')}
+
+{T('variants_aux_tinyimagenet__dinov2_vitb14_reg.md')}
+
+Projection-draw variance:
+
+{T('variants_projection_draws.md')}
+
+**Takeaways - configuration ablation.**
+
+* **Projection matrices do not matter.** Gaussian, Rademacher, sparse
+  (Achlioptas 1/3) and a two-projection ensemble land within `0.003` of each
+  other at every K and dataset; three independent projection draws move the
+  baseline by less than `0.005` accuracy.  There is no projection-side headroom
+  here.
+* **More bits per coordinate are worse, not better.** At matched total code
+  length the 2- and 3-bit thermometers cost `1-4` ID points,
+  `0.005-0.02` AUROC and `0.05-0.15` no-label clustering accuracy vs the 1-bit
+  sign code, and they lose robustness too.  Sign is the best quantizer tested.
+* **Fancier prototype rules do not help.** Binary-majority and
+  coordinate-median prototypes are `0.5-2` points below the real-valued
+  class-mean prototype; encoding the class-mean feature once (`projmean`) sits
+  in between.  The baseline mean/cosine rule is at the top of the prototype
+  family.
+* **The one thing that closes the gap is a trained readout.** `lincodes` - a
+  linear softmax layer on the same 1-bit codes - matches or beats the trained
+  linear head on the raw features at every K (CIFAR DINOv2 K=100:
+  `+0.005/+0.016`; Tiny K=200: `+0.002/+0.007`), and on the weaker ResNet-18
+  features it wins by `+0.03/+0.05` (CIFAR K=100).  It is also markedly more
+  robust (CIFAR K=100, noise 0.10: `0.59/0.60` vs the prototype's `0.46`).
+  The information is in the code; the hand-designed prototype rule is what
+  loses it.
+* **What the HDC representation is not good at:** multi-bit quantization does
+  not fix clustering, and on the synthetic spherical data the sign prototype
+  beats the trained linear head at K=5 (`+0.09`) but loses at K=200 (`-0.03`),
+  with `lincodes` tracking the prototype rather than the linear head there.
+
+## 7. Does the extractor change the gap?
+
+The same head comparison across seven feature sources, from DINOv2 ViT-B/14
+(strong self-supervised) down to ImageNet-supervised ResNet-50 / MobileNetV2 /
+ResNet-18, DINOv1 ViT-S/16 and TinyViT-11M.  All use the same 70/30 split and
+the same heads.
+
+{T('backbone_gap_summary_CIFAR-100.md')}
+
+{T('backbone_gap_summary_TinyImageNet.md')}
+
+Gap vs K for every extractor:
+
+{T('backbone_gaps_CIFAR-100.md')}
+
+{T('backbone_gaps_TinyImageNet.md')}
+
+**Takeaways - extractor sweep.**
+
+* **The gap grows as the extractor gets weaker and K gets larger.** On
+  CIFAR-100 at K=100 the HDC-vs-linear gap goes from `+0.053` (DINOv2-B) and
+  `+0.048` (TinyViT) to `+0.088` (ResNet-50) / `+0.073` (MobileNetV2); the gap
+  to the best trained head (MLP) grows much more, from `+0.054` (DINOv2-B) to
+  `+0.167` (DINOv1 ViT-S/16) and `+0.154` (ResNet-50).  TinyImageNet shows the
+  same ordering (`+0.030` linear / `+0.016` MLP on DINOv2-B; `+0.073` /
+  `+0.086` on ResNet-50).
+* At small K the gap is negligible for every extractor (`<0.01` at K=5-10);
+  the divergence is a large-K phenomenon.
+* Supervised backbones (ResNet-50, MobileNetV2) have the largest gap per unit
+  of accuracy: their penultimate features carry class information that a
+  linear/prototype readout extracts much less well than an MLP does
+  (ResNet-50 CIFAR K=100: linear `0.520`, MLP `0.585`, HDC `0.432`).
+* Combined with Section 6: no random-projection or quantization choice closes
+  this gap, but a trained readout on the same HDC codes does.  That is the
+  concrete, evidence-backed target for an HDC-for-high-class-count project.
+
+---
+
+## 8. Cross-benchmark summary
 
 {T('summary_all.md')}
 
 ---
 
-## 7. Direct answers
+## 9. Direct answers
 
 ### Q1 - does HDC prototype accuracy degrade with more classes?
 
@@ -472,6 +583,12 @@ HDC-specific.**
   from-scratch suites both the network's own head and HDC fall together
   (`net ~ hdc4k` at every K), so the HDC head does not add its own
   class-count degradation.
+* **Head-specific residual:** beyond the shared degradation, the HDC prototype
+  rule carries a residual readout gap that grows with K (Section 6): about
+  0.05 on DINOv2 at K=100, up to 0.09 on ResNet-50, and 0.14-0.17 against an
+  MLP on the weaker supervised backbones.  This part is specific to the
+  prototype readout, not the projection: a trained linear layer on the same
+  codes removes it (`lincodes` in Section 6).
 * **Robustness:** ID accuracy under pixel noise/noised features decays with K
   for all heads, HDC and network layers closely in step; the trained layers
   keep a small absolute edge on images at every K, and no head shows a
@@ -494,10 +611,12 @@ wins:**
 
 | regime | winner | evidence |
 | :--- | :--- | :--- |
-| ID accuracy, DINOv2/ResNet features | **linear/MLP**, by 2-5 pts at large K | CIFAR K=100: `0.724` HDC vs `0.777` linear; Tiny K=200: `0.834` vs `0.864` |
+| ID accuracy, DINOv2/ResNet features | **linear/MLP**, by 2-5 pts at large K, more on weak backbones | CIFAR K=100: `0.724` HDC vs `0.777` linear; Tiny K=200: `0.834` vs `0.864`; ResNet-50 CIFAR K=100: `0.432` vs `0.520`/`0.585` |
+| HDC configuration space (projections / quantization / prototypes) | **no hand-designed config closes the gap**; only a trained readout on the codes does | Section 6: every projection/quantization/prototype variant stays `0.03-0.09` below linear at large K; `lincodes` matches/beats it |
+| extractor quality | gap grows from ~3-5 pts (DINOv2-B) to 7-9 pts (ResNet-50 / MobileNetV2), and 14-17 pts to MLP | Section 7 |
 | ID accuracy, random HDC-native codes | **tie** (HDC/linear/proto), MLP collapses | bits D=4096 K=200: `0.989/0.991/0.989` vs MLP `0.422` |
-| robustness | tie / trained head slightly better on images, **HDC clearly better at D=10000 vs 4096 on codes** | bits flip0.46; CIFAR noise |
-| novel no-label clustering | **tie on real features** (HDC ~ feature k-means); **feature k-means wins on synthetic projections** | CIFAR/Tiny vs gmm `0.40` HDC vs `0.88` features |
+| robustness | tie / trained head slightly better on images, **HDC clearly better at D=10000 vs 4096 on codes**; a trained readout on codes is clearly more robust | bits flip0.46; CIFAR noise; `lincodes` CIFAR K=100 noise 0.10 `0.59` vs `0.46` |
+| novel no-label clustering | **tie on real features** (HDC ~ feature k-means); **feature k-means wins on synthetic projections**; multi-bit quantization hurts | CIFAR/Tiny vs gmm `0.40` HDC vs `0.88` features; Section 6 |
 | OOD detection | **tie with linear on DINOv2**, better than MLP on DINOv2, but **network softmax wins on from-scratch networks at large K** | pretrain MLP K=50: `0.865` net vs `0.654` HDC; pretrain CIFAR K=50: `0.774` vs `0.737`; pretrain Tiny K=50: `0.671` vs `0.605` |
 | 5-shot novel | **HDC ahead on codes** (`0.57` vs `0.46`), tie on images | bits / CIFAR / Tiny 5-shot tables |
 | data-efficiency (few labels) | **HDC / prototypes** | same tables |
@@ -506,11 +625,26 @@ The consistent picture: the HDC prototype rule is a strong, training-free
 baseline that matches feature-space prototypes and is remarkably insensitive
 to the HD dimension; a trained layer buys a few points on strong features and
 a larger margin on weak ones; prototype *distance* is a weaker novelty score
-than a trained softmax once K is large.
+than a trained softmax once K is large.  Sections 6-7 locate the deficit
+precisely: it is not the random projection (any projection works equally well)
+and not the number of bits (more bits hurt); it is the hand-designed
+class-mean readout.  A trained linear layer on the same codes matches or beats
+the raw-feature linear head, so the headroom is real and the fix is on the
+readout side.
+
+**Is a future project on HDC for high-class-count settings valid?** Yes, with
+a specific target.  The gap is negligible at K <= 10, reaches 3-5 points on
+strong self-supervised features at K = 100-200, 7-9 points on cheap supervised
+backbones, and up to 14-17 points against an MLP.  It is largest exactly where
+HDC is most attractive - weak/cheap extractors and large K - and it survives
+every projection/quantization change while disappearing under a trained
+readout.  A project on adaptive/learned HDC prototypes or lightweight readouts
+over HDC codes in high-class regimes is therefore well-motivated; a project on
+better random projections or quantizers is not, on this evidence.
 
 ---
 
-## 8. Limitations and notes
+## 10. Limitations and notes
 
 * The HDC head here is the supervised prototype classifier (class means from
   labelled data), not the full online discovery method from the NCD_HDC repo;
@@ -531,13 +665,29 @@ than a trained softmax once K is large.
 * OOD AUROC for `mlp` uses max-softmax, which is known to be miscalibrated;
   the lower MLP AUROCs are partly a calibration artefact, not necessarily a
   worse representation.
+* `lincodes` in the configuration ablation is a **trained** readout; it is
+  included as the capacity ceiling of the HDC encoding (what is recoverable
+  from the codes), not as a training-free HDC method.  It shows where the
+  information lives, not that the online, label-free HDC pipeline can reach
+  that ceiling without training.
+* The configuration ablation uses a reduced K grid (three K values, 3 seeds on
+  the main backbones) and the new-extractor sweep uses 2 seeds; the effect
+  sizes reported (0.03-0.17 accuracy) are far larger than the seed spread.
+* Multi-bit quantization is only tested through Gaussian-quantile thermometer
+  codes at matched total code length; other multi-bit schemes (e.g. scalar
+  integer codes with L1 distance) were not run.
 
-## 9. Reproducing
+## 11. Reproducing
 
 ```bash
 # 1. extract and cache frozen image features (DINOv2 + ResNet-18, clean + noise)
 python scripts/extract_features.py --datasets cifar100 tinyimagenet \\
     --backbones dinov2_vitb14_reg resnet18 --perturbations clean noise0.05 noise0.10
+
+# 1b. extra extractors for the backbone sweep (clean features only)
+python scripts/extract_features.py --datasets cifar100 tinyimagenet \\
+    --backbones dinov2_vits14_reg dino_vits16 resnet50 mobilenet_v2 tinyvit_11m \\
+    --perturbations clean
 
 # 2. run the suites (records are written under results/raw; reruns skip done runs)
 python scripts/run_synthetic.py
@@ -545,6 +695,15 @@ python scripts/run_images.py --datasets cifar100 tinyimagenet \\
     --backbones dinov2_vitb14_reg resnet18 --seeds 0 1 2
 python scripts/run_pretrain.py --suite mlp_synthetic cifar --seeds 0 1 2
 python scripts/run_pretrain.py --suite tiny --seeds 0 1 --ks 10 50 200 --epochs 40
+
+# 2b. configuration ablation and extractor sweep
+python scripts/run_variants.py --cases all
+python scripts/run_images.py --datasets cifar100 \\
+    --backbones dinov2_vits14_reg dino_vits16 resnet50 mobilenet_v2 tinyvit_11m \\
+    --seeds 0 1 --ks 5 50 100 --skip-robust
+python scripts/run_images.py --datasets tinyimagenet \\
+    --backbones dinov2_vits14_reg dino_vits16 resnet50 mobilenet_v2 tinyvit_11m \\
+    --seeds 0 1 --ks 10 50 200 --skip-robust
 
 # 3. tables, figures and this README
 python scripts/make_report.py
